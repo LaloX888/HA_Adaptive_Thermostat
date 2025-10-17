@@ -6,7 +6,7 @@ from .const import DOMAIN
 
 PLATFORMS: list[str] = ["climate"]
 
-async def async_setup(hass, config):
+async def async_setup(hass: HomeAssistant, config: dict):
     return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

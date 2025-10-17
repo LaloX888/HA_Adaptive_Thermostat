@@ -28,9 +28,6 @@ class SmartSplitConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         })
         return self.async_show_form(step_id="user", data_schema=schema)
 
-    async def async_step_import(self, import_data):
-        return await self.async_step_user(import_data)
-
     async def async_get_options_flow(self, config_entry):
         return SmartSplitOptionsFlowHandler(config_entry)
 
@@ -56,7 +53,6 @@ class SmartSplitOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required(CONF_AUTOTUNE_ENABLED, default=o[CONF_AUTOTUNE_ENABLED]): bool,
             vol.Required(CONF_AUTOTUNE_DEADBAND, default=o[CONF_AUTOTUNE_DEADBAND]): vol.Coerce(float),
             vol.Required(CONF_AUTOTUNE_STEP, default=o[CONF_AUTOTUNE_STEP]): vol.Coerce(float),
-            vol.Required(CONF_AUTOTUNE_WINDOW_H, default=o[CONF_AUTOTUNE_WINDOW_H]): vol.Coerce(int),
             vol.Required(CONF_AUTOTUNE_MIN_GAP_H, default=o[CONF_AUTOTUNE_MIN_GAP_H]): vol.Coerce(int),
             vol.Required(CONF_DRY_ENABLED, default=o[CONF_DRY_ENABLED]): bool,
             vol.Required(CONF_RH_TARGET, default=o[CONF_RH_TARGET]): vol.Coerce(int),

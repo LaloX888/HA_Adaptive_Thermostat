@@ -8,7 +8,7 @@ from homeassistant.components.climate.const import HVACMode, ClimateEntityFeatur
 from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval, async_call_later
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -21,117 +21,107 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
 
 
 class SmartSplitThermostat(ClimateEntity, RestoreEntity):
-    """Proxy Climate entity controlling a real AC with adaptive logic."""
-
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_precision = 0.1
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL, HVACMode.DRY]
+    _attr_should_poll = False
 
     def __init__(self, hass: HomeAssistant, entry):
         self.hass = hass
         self.entry = entry
         d = entry.data
         o = {**DEFAULTS, **entry.options}
-
         self._name = d[CONF_NAME]
         self._unique_id = f"smartsplit_{entry.entry_id}"
         self._ac = d[CONF_AC_ENTITY]
         self._t_sens = d[CONF_TEMP_SENSOR]
         self._h_sens = d.get(CONF_HUM_SENSOR)
         self._w_sens = d.get(CONF_WINDOW_SENSOR)
-
         self._target: float = d.get(CONF_TARGET_INIT, DEFAULTS[CONF_TARGET_INIT])
         self._mode: HVACMode = HVACMode.OFF
         self.opts = o
-
         self._last_adj: datetime | None = None
         self._last_autotune: datetime | None = None
         self._restored_mode: HVACMode | None = None
-
-        # react to changes
+        self._restore_timer = None
         async_track_state_change_event(hass, [self._t_sens, self._ac], self._on_state)
         if self._h_sens:
             async_track_state_change_event(hass, [self._h_sens], self._on_state)
         if self._w_sens:
             async_track_state_change_event(hass, [self._w_sens], self._on_window)
-
-        # periodic tick
         self._unsub_timer = async_track_time_interval(hass, self._tick, timedelta(minutes=5))
 
     async def async_added_to_hass(self):
-        """Restore last known target and mode on HA restart."""
+        # Restore last known target/mode
         last = await self.async_get_last_state()
         if last:
-            # restore hvac_mode
             try:
                 if last.state in [m.value for m in HVACMode]:
                     self._mode = HVACMode(last.state)
             except Exception:
                 pass
-            # restore target temperature
             try:
                 t = last.attributes.get("temperature")
                 if t is not None:
                     self._target = float(t)
             except Exception:
                 pass
+        # Adjust exposed hvac_modes to match underlying AC (plus OFF)
+        ac = self.hass.states.get(self._ac)
+        if ac:
+            try:
+                ac_modes = set(ac.attributes.get("hvac_modes", []))
+                allowed = [m for m in [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL, HVACMode.DRY] if (m == HVACMode.OFF or m.value in ac_modes)]
+                if allowed:
+                    self._attr_hvac_modes = allowed
+            except Exception:
+                pass
         self.async_write_ha_state()
 
-    # ----- ClimateEntity props -----
+    # ---- properties
     @property
     def name(self): return self._name
-
     @property
     def unique_id(self): return self._unique_id
-
     @property
     def hvac_modes(self): return self._attr_hvac_modes
-
     @property
     def hvac_mode(self): return self._mode
-
     @property
     def current_temperature(self):
         st = self.hass.states.get(self._t_sens)
-        try:
-            return float(st.state)
-        except Exception:
-            return None
-
+        try: return float(st.state)
+        except Exception: return None
     @property
     def target_temperature(self): return self._target
-
     @property
     def supported_features(self): return self._attr_supported_features
 
-    # ----- Setters from UI -----
+    # ---- UI setters
     async def async_set_temperature(self, **kwargs):
-        if 'temperature' in kwargs:
-            self._target = float(kwargs['temperature'])
+        if "temperature" in kwargs:
+            self._target = float(kwargs["temperature"])
             await self._maybe_act(reason="target_changed")
             self.async_write_ha_state()
 
     async def async_set_hvac_mode(self, hvac_mode: str):
         self._mode = HVACMode(hvac_mode)
-        # window guard
         if self._w_sens and self._is_window_open():
             self._restored_mode = self._mode
             self._mode = HVACMode.OFF
         await self._maybe_act(reason="mode_changed")
         self.async_write_ha_state()
 
-    # ----- Helpers -----
+    # ---- helpers
     def _is_window_open(self) -> bool:
-        if not self._w_sens:
-            return False
+        if not self._w_sens: return False
         st = self.hass.states.get(self._w_sens)
         return bool(st and st.state == "on")
 
     @callback
     async def _on_window(self, event):
-        if not self._w_sens:
-            return
+        if not self._w_sens: return
         if self._is_window_open():
             if self._mode != HVACMode.OFF:
                 self._restored_mode = self._mode
@@ -139,11 +129,14 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
                 await self._turn_off_real()
                 self.async_write_ha_state()
         else:
-            async def delayed_restore(now):
+            # one-shot delayed restore after 5 minutes closed
+            if self._restore_timer:
+                self._restore_timer()  # cancel previous
+            def _cb(now):
                 if not self._is_window_open() and self._restored_mode:
-                    await self.async_set_hvac_mode(self._restored_mode)
+                    self.hass.async_create_task(self.async_set_hvac_mode(self._restored_mode))
                     self._restored_mode = None
-            async_track_time_interval(self.hass, delayed_restore, timedelta(minutes=5))
+            self._restore_timer = async_call_later(self.hass, 300, _cb)
 
     @callback
     async def _on_state(self, event):
@@ -153,36 +146,29 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
         await self._maybe_act(reason="timer")
 
     def _rate_limit_ok(self, now: datetime) -> bool:
-        if not self._last_adj:
-            return True
+        if not self._last_adj: return True
         day = self.opts.get(CONF_RATE_DAY_MIN, 0)
         night = self.opts.get(CONF_RATE_NIGHT_MIN, 0)
         need_min = night if is_night(now) else day
-        if need_min <= 0:
-            return True
+        if need_min <= 0: return True
         return (now - self._last_adj) >= timedelta(minutes=need_min)
 
     def _safe_float(self, entity_id: str, default=None):
         st = self.hass.states.get(entity_id)
-        try:
-            return float(st.state)
-        except Exception:
-            return default
+        try: return float(st.state)
+        except Exception: return default
 
-    # ----- Core logic -----
+    # ---- core logic
     async def _maybe_act(self, reason: str):
         now = datetime.now()
-
-        # OFF → turn off underlying AC
         if self._mode == HVACMode.OFF:
             await self._turn_off_real()
             return
 
-        # DRY → humidity-driven only
+        # DRY mode handling
         if self._mode == HVACMode.DRY and self.opts.get(CONF_DRY_ENABLED) and self._h_sens:
             rh = self._safe_float(self._h_sens, default=None)
-            if rh is None:
-                return
+            if rh is None: return
             rh_t = self.opts[CONF_RH_TARGET]
             band = self.opts[CONF_RH_BAND]
             high = rh_t + band
@@ -194,14 +180,11 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
                 await self._turn_off_real()
             return
 
-        # Heat/Cool control
         tnow = self._safe_float(self._t_sens, default=None)
-        if tnow is None:
-            return
+        if tnow is None: return
         target = self._target
         ac = self.hass.states.get(self._ac)
         curr_sp = float(ac.attributes.get("temperature", target)) if ac else target
-
         up_boost = self.opts[CONF_UP_BOOST]
         down_boost = self.opts[CONF_DOWN_BOOST]
 
@@ -212,13 +195,9 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
             base = self.opts[CONF_BASELINE_HEAT]
             cold = tnow <= (target - on_d)
             hot = tnow >= (target - off_d)
-            if cold:
-                desired_sp = clamp(base + up_boost, 16.0, 26.0)
-            elif hot:
-                desired_sp = clamp(base - down_boost, 16.0, 26.0)
-            else:
-                desired_sp = base
-
+            if cold: desired_sp = clamp(base + up_boost, 16.0, 26.0)
+            elif hot: desired_sp = clamp(base - down_boost, 16.0, 26.0)
+            else: desired_sp = base
         elif self._mode == HVACMode.COOL:
             desired_mode = HVACMode.COOL
             on_d = self.opts[CONF_COOL_ON_DELTA]
@@ -226,32 +205,23 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
             base = self.opts[CONF_BASELINE_COOL]
             hot = tnow >= (target + on_d)
             cool_ok = tnow <= (target + off_d)
-            if hot:
-                desired_sp = clamp(base - up_boost, 16.0, 30.0)
-            elif cool_ok:
-                desired_sp = clamp(base + down_boost, 16.0, 30.0)
-            else:
-                desired_sp = base
-
+            if hot: desired_sp = clamp(base - up_boost, 16.0, 30.0)
+            elif cool_ok: desired_sp = clamp(base + down_boost, 16.0, 30.0)
+            else: desired_sp = base
         else:
             return
 
-        # optional rate limit
-        if not self._rate_limit_ok(now):
-            return
+        if not self._rate_limit_ok(now): return
 
-        # ensure mode
         if not ac or ac.state != desired_mode:
             await self._set_ac_mode(desired_mode)
 
-        # apply setpoint
         if abs((curr_sp or 0) - desired_sp) >= 0.05:
             await self._set_ac_temp(desired_sp)
             self._last_adj = now
             if self.opts.get(CONF_WATCHDOG_ENABLED, True):
                 await self._watchdog(desired_sp, desired_mode)
 
-        # autotune (coarse)
         if self.opts.get(CONF_AUTOTUNE_ENABLED, True):
             await self._maybe_autotune(now, tnow, target)
 
@@ -261,8 +231,7 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
         bias = tnow - target
         db = self.opts[CONF_AUTOTUNE_DEADBAND]
         step = self.opts[CONF_AUTOTUNE_STEP]
-        if abs(bias) < db:
-            return
+        if abs(bias) < db: return
         if self._mode == HVACMode.HEAT:
             b = self.opts[CONF_BASELINE_HEAT]
             self.opts[CONF_BASELINE_HEAT] = clamp(round((b - step if bias > 0 else b + step)*2)/2, 16.0, 26.0)
@@ -272,11 +241,11 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
         self._last_autotune = now
         self.hass.config_entries.async_update_entry(self.entry, options=self.opts)
 
-    # ----- Low-level AC ops -----
+    # ---- low level
     async def _set_ac_mode(self, mode: HVACMode):
         await self.hass.services.async_call(
             CLIMATE_DOMAIN, "set_hvac_mode",
-            {"entity_id": self._ac, "hvac_mode": mode}
+            {"entity_id": self._ac, "hvac_mode": mode.value if hasattr(mode, "value") else mode}
         )
 
     async def _set_ac_temp(self, temp: float):
@@ -299,7 +268,6 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
             await sleep(5)
             await self._set_ac_temp(desired_sp)
 
-    # ----- Device info -----
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(identifiers={(DOMAIN, self._unique_id)}, name=self._name)

@@ -1,27 +1,3 @@
 {
-  "title": "SmartSplit Thermostat",
-  "config": {
-    "step": {
-      "user": {
-        "title": "Új szoba hozzáadása",
-        "data": {
-          "name": "Név",
-          "ac_entity": "Vezérelt klíma (Tuya/GREE/...)",
-          "temp_sensor": "Hőmérséklet szenzor",
-          "hum_sensor": "Páratartalom szenzor (opcionális)",
-          "window_sensor": "Ablak szenzor (opcionális)",
-          "target_init": "Kezdő célhőfok (°C)"
-        }
-      }
-    },
-    "options": {
-      "step": {
-        "init": {
-          "title": "Beállítások",
-          "description": "Küszöbök, boostok, baseline, autotune, DRY, watchdog, rate-limit",
-          "data": {}
-        }
-      }
-    }
-  }
+  "title": "SmartSplit Thermostat"
 }
