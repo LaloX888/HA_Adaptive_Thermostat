@@ -6,7 +6,7 @@ from asyncio import sleep
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import HVACMode, ClimateEntityFeature
 from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
-from homeassistant.const import TEMP_CELSIUS, ATTR_TEMPERATURE
+from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.entity import DeviceInfo
@@ -24,7 +24,7 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
     """Proxy Climate entity controlling a real AC with adaptive logic."""
 
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
-    _attr_temperature_unit = TEMP_CELSIUS
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_precision = 0.1
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL, HVACMode.DRY]
 
@@ -107,8 +107,8 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
 
     # ----- Setters from UI -----
     async def async_set_temperature(self, **kwargs):
-        if ATTR_TEMPERATURE in kwargs:
-            self._target = float(kwargs[ATTR_TEMPERATURE])
+        if 'temperature' in kwargs:
+            self._target = float(kwargs['temperature'])
             await self._maybe_act(reason="target_changed")
             self.async_write_ha_state()
 
