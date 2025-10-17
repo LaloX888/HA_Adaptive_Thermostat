@@ -8,6 +8,7 @@ from homeassistant.components.climate import DOMAIN as CLIMATE_DOMAIN
 from homeassistant.const import TEMP_CELSIUS, ATTR_TEMPERATURE
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.entity import DeviceInfo
 from .const import *
 from .helpers import clamp, is_night
@@ -15,7 +16,7 @@ from .helpers import clamp, is_night
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     async_add_entities([SmartSplitThermostat(hass, entry)], True)
 
-class SmartSplitThermostat(ClimateEntity):
+class SmartSplitThermostat(ClimateEntity, RestoreEntity):
     _attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
     _attr_temperature_unit = TEMP_CELSIUS
     _attr_precision = 0.1
@@ -244,3 +245,22 @@ class SmartSplitThermostat(ClimateEntity):
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(identifiers={(DOMAIN, self._unique_id)}, name=self._name)
+
+    async def async_added_to_hass(self):
+        ""Restore last known target and mode on HA restart.""
+        last = await self.async_get_last_state()
+        if last:
+            # restore hvac_mode
+            try:
+                self._mode = HVACMode(last.state) if last.state in [m.value for m in HVACMode] else self._mode
+            except Exception:
+                pass
+            # restore target temperature
+            t = last.attributes.get('temperature')
+            try:
+                if t is not None:
+                    self._target = float(t)
+            except Exception:
+                pass
+        # fall back: if still None/None, keep current defaults
+        self.async_write_ha_state()
