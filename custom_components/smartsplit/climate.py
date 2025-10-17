@@ -23,6 +23,25 @@ class SmartSplitThermostat(ClimateEntity, RestoreEntity):
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL, HVACMode.DRY]
 
     def __init__(self, hass: HomeAssistant, entry):
+
+    async def async_added_to_hass(self):
+        """Restore last known target and mode on HA restart."""
+        last = await self.async_get_last_state()
+        if last:
+            # restore hvac_mode
+            try:
+                if last.state in [m.value for m in HVACMode]:
+                    self._mode = HVACMode(last.state)
+            except Exception:
+                pass
+            # restore target temperature
+            try:
+                t = last.attributes.get('temperature')
+                if t is not None:
+                    self._target = float(t)
+            except Exception:
+                pass
+        self.async_write_ha_state()
         self.hass = hass
         self.entry = entry
         d = entry.data
