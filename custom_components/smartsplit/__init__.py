@@ -6,6 +6,9 @@ from .const import DOMAIN
 
 PLATFORMS: list[str] = ["climate"]
 
+async def async_setup(hass, config):
+    return True
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = entry
